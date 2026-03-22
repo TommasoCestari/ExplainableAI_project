@@ -1,0 +1,12 @@
+{
+  "method": "LIME",
+  "config": "/teamspace/studios/this_studio/xAI_project/configs/fashion_mnist_lambda1e-2_c5_seed29.json",
+  "exp_name": "fashion_mnist_lambda1e-2_c5_seed29",
+  "n_lime_samples": 2000,
+  "n_samples": 600,
+  "total_time_s": 2998.644,
+  "time_per_sample_s": 4.99774,
+  "mean_confidence_drop": 0.539063,
+  "std_confidence_drop": 0.349815,
+  "device": "cuda:0"
+}
