@@ -60,19 +60,78 @@ def load_senn(config_path, device="cpu"):
 
 
 class SENNWrapper(nn.Module):
-    """Expose only the log-softmax output for Captum."""
+    """Expose probability output for Captum LIME."""
     def __init__(self, senn_model):
         super().__init__()
         self.senn = senn_model
     #from senn output (y_pred, (concepts, relevances), x_reconstructed), we want only the predictions
     def forward(self, x):
         predictions, _, _ = self.senn(x)
-        return predictions
+        # SENN returns log-probabilities; LIME works better with probabilities.
+        return torch.exp(predictions)
+
+
+def infer_output_kind(raw_outputs, atol=1e-3):
+    """Inspects the raw model outputs and classifies them as "log_probs", "probs", or "logits" by checking if they sum to 1 
+    after exponentiation or directly"""
+
+    exp_sum = torch.exp(raw_outputs).sum(dim=1)
+    prob_sum = raw_outputs.sum(dim=1)
+    is_log_probs = torch.allclose(exp_sum, torch.ones_like(exp_sum), atol=atol)
+    in_01 = (raw_outputs >= 0).all() and (raw_outputs <= 1).all()
+    is_probs = in_01 and torch.allclose(prob_sum, torch.ones_like(prob_sum), atol=atol)
+    if is_log_probs:
+        return "log_probs"
+    if is_probs:
+        return "probs"
+    return "logits"
+
+
+def to_probabilities(raw_outputs, kind):
+    """Converts raw model outputs to probabilities based on the inferred kind: exponentiates log-probs, 
+    passes probs through unchanged, or applies softmax to logits"""
+
+    if kind == "log_probs":
+        return torch.exp(raw_outputs)
+    if kind == "probs":
+        return raw_outputs
+    return torch.softmax(raw_outputs, dim=1)
+
+
+def print_lime_diagnostics(raw_outputs, preds, labels, attrs, drops, max_items=3):
+    """Prints sanity checks after the first batch: output type, mean attribution magnitude, mean confidence drop, 
+    and per-sample prediction/confidence/drop for the first 3 images"""
+
+    kind = infer_output_kind(raw_outputs)
+    probs = to_probabilities(raw_outputs, kind)
+
+    print(f"[LIME][Diag] model output kind: {kind}")
+    if kind != "log_probs":
+        print("[LIME][Diag][Warn] Expected log-probs from SENN aggregator; check model output scale.")
+
+    attr_abs_mean = float(attrs.abs().mean().item())
+    print(f"[LIME][Diag] mean |attr|: {attr_abs_mean:.6f}")
+    if attr_abs_mean < 1e-6:
+        print("[LIME][Diag][Warn] Attributions are near zero; consider increasing n_samples or checking feature_mask.")
+
+    drop_mean = float(np.mean(drops))
+    print(f"[LIME][Diag] mean confidence drop: {drop_mean:.6f}")
+    if drop_mean < 0:
+        print("[LIME][Diag][Warn] Negative drop indicates masking increases confidence for some samples.")
+
+    n_show = min(max_items, len(preds))
+    for i in range(n_show):
+        conf = float(probs[i, preds[i]].item())
+        print(
+            f"[LIME][Diag] sample {i}: pred={preds[i].item()} label={labels[i].item()} "
+            f"conf={conf:.4f} drop={drops[i]:.4f}"
+        )
 
 
 def pixel_ablation_confidence_drop(wrapper, images, attributions, pred_labels,
                                    top_fraction=0.20):
-    """Mask top-k% pixels (by |attribution|) with the background value; return per-sample confidence drop."""
+    """Masks the top 20% most attributed individual pixels with the normalized black value and returns the drop in model confidence for the predicted class. 
+    This is a pixel-level faithfulness metric that runs regardless of whether superpixels are used"""
     
     # Valore del pixel nero (0.0 originale) dopo la normalizzazione: (0.0 - 0.2860) / 0.3530
     fill_value = -0.8102 
@@ -97,24 +156,22 @@ def pixel_ablation_confidence_drop(wrapper, images, attributions, pred_labels,
     return (conf_orig - conf_abl).cpu().numpy()
 
 
-def build_superpixel_mask(image_tensor, num_segments=50, compactness=0.1):
-    """Create a per-image superpixel mask compatible with Captum LIME."""
+def build_superpixel_mask(image_tensor, num_segments=20, compactness=10.0):
+    """Denormalizes the image and runs SLIC to produce a superpixel segmentation, returned as an integer mask tensor where each value is the segment ID of that pixel. 
+    Does not threshold background"""
+
     img_denorm = image_tensor * FMNIST_STD + FMNIST_MEAN
     img_np = img_denorm.squeeze(0).detach().cpu().numpy()
-    segments = slic(
-        img_np,
-        n_segments=num_segments,
-        compactness=compactness,
-        start_label=0,
-        channel_axis=None,
-    )
+    segments = slic(img_np, n_segments=num_segments, compactness=compactness,
+                    start_label=0, channel_axis=None)
     return torch.from_numpy(segments).long().unsqueeze(0).to(image_tensor.device)
 
 
 def superpixel_ablation_confidence_drop(wrapper, image, attribution, pred_label,
                                         superpixel_mask, top_fraction=0.20,
                                         fill_value=-0.8102):
-    """Mask top-k superpixels (by |attribution|) and random-k superpixels."""
+    """Masks the top 20% highest-attributed superpixels and separately a random 20% of superpixels, returning both confidence drops. 
+    The difference (top minus random) measures whether LIME identified genuinely informative regions"""
     wrapper.eval()
     with torch.no_grad():
         probs_orig = torch.softmax(wrapper(image.unsqueeze(0)), dim=1)
@@ -156,9 +213,9 @@ def main():
                         help="Max test images to process (0 = all)")
     parser.add_argument("--use_superpixels", action="store_true",
                         help="Use SLIC superpixels as interpretable features")
-    parser.add_argument("--sp_num_segments", type=int, default=50,
+    parser.add_argument("--sp_num_segments", type=int, default=20,
                         help="Number of SLIC superpixels per image")
-    parser.add_argument("--sp_compactness", type=float, default=0.1,
+    parser.add_argument("--sp_compactness", type=float, default=10.0,
                         help="SLIC compactness (higher = more regular superpixels)")
     parser.add_argument("--device", default="", help="Device (auto-detect if empty)")
     args = parser.parse_args()
@@ -181,11 +238,11 @@ def main():
     # Output dir
     with open(args.config, "r") as f:
         exp_name = json.load(f)["exp_name"]
-    out_dir = Path("results") / exp_name / "posthoc_superpixels"
+    out_dir = Path("results") / exp_name / "posthoc_superpixels_3imgtest"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect attributions batch by batch
-    all_attrs, all_preds, all_labels, all_drops = [], [], [], []
+    all_attrs, all_preds, all_labels = [], [], []
     all_sp_drop_top, all_sp_drop_rand = [], []
     n_processed = 0
     t_total = 0.0
@@ -195,7 +252,8 @@ def main():
         y = y.long().to(device)
 
         with torch.no_grad():
-            preds = model(x)[0].argmax(1)
+            raw_preds = model(x)[0]
+            preds = raw_preds.argmax(1)
 
         # LIME is per-image
         batch_attrs = []
@@ -234,12 +292,13 @@ def main():
                 all_sp_drop_rand.append(drop_rand)
         batch_attrs = torch.stack(batch_attrs)
         t_total += time.perf_counter() - t0
-        drops = pixel_ablation_confidence_drop(wrapper, x, batch_attrs, preds)
+
+        if batch_idx == 0:
+            print_lime_diagnostics(raw_preds, preds, y, batch_attrs)
 
         all_attrs.append(batch_attrs.cpu())
         all_preds.append(preds.cpu())
         all_labels.append(y.cpu())
-        all_drops.append(drops)
 
         n_processed += len(x)
         print(f"  Batch {batch_idx+1}: {n_processed} samples done "
@@ -252,13 +311,11 @@ def main():
     all_attrs  = torch.cat(all_attrs)
     all_preds  = torch.cat(all_preds)
     all_labels = torch.cat(all_labels)
-    all_drops  = np.concatenate(all_drops)
 
     # Save
     torch.save(all_attrs,  out_dir / "lime_attributions.pt")
     torch.save(all_preds,  out_dir / "lime_predictions.pt")
     torch.save(all_labels, out_dir / "lime_labels.pt")
-    np.save(out_dir / "lime_ablation_drops.npy", all_drops)
 
     if args.use_superpixels:
         sp_drop_top = np.array(all_sp_drop_top)
@@ -276,8 +333,6 @@ def main():
         "n_samples": int(len(all_labels)),
         "total_time_s": round(t_total, 3),
         "time_per_sample_s": round(t_total / len(all_labels), 5),
-        "mean_confidence_drop": round(float(all_drops.mean()), 6),
-        "std_confidence_drop": round(float(all_drops.std()), 6),
         "device": device,
         "use_superpixels": bool(args.use_superpixels),
         "sp_num_segments": args.sp_num_segments if args.use_superpixels else None,
@@ -291,7 +346,6 @@ def main():
         json.dump(meta, f, indent=2)
 
     print(f"\n[LIME] Done — {len(all_labels)} samples in {t_total:.1f}s")
-    print(f"       Mean confidence drop (top-20% ablation): {all_drops.mean():.4f}")
     if args.use_superpixels:
         print(f"       Superpixel drop (top-20%): {sp_drop_top.mean():.4f}")
         print(f"       Superpixel drop (rand-20%): {sp_drop_rand.mean():.4f}")
