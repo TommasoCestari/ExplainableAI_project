@@ -98,7 +98,7 @@ def to_probabilities(raw_outputs, kind):
     return torch.softmax(raw_outputs, dim=1)
 
 
-def print_lime_diagnostics(raw_outputs, preds, labels, attrs, drops, max_items=3):
+def print_lime_diagnostics(raw_outputs, preds, labels, attrs, max_items=3):
     """Prints sanity checks after the first batch: output type, mean attribution magnitude, mean confidence drop, 
     and per-sample prediction/confidence/drop for the first 3 images"""
 
@@ -114,17 +114,12 @@ def print_lime_diagnostics(raw_outputs, preds, labels, attrs, drops, max_items=3
     if attr_abs_mean < 1e-6:
         print("[LIME][Diag][Warn] Attributions are near zero; consider increasing n_samples or checking feature_mask.")
 
-    drop_mean = float(np.mean(drops))
-    print(f"[LIME][Diag] mean confidence drop: {drop_mean:.6f}")
-    if drop_mean < 0:
-        print("[LIME][Diag][Warn] Negative drop indicates masking increases confidence for some samples.")
-
     n_show = min(max_items, len(preds))
     for i in range(n_show):
         conf = float(probs[i, preds[i]].item())
         print(
             f"[LIME][Diag] sample {i}: pred={preds[i].item()} label={labels[i].item()} "
-            f"conf={conf:.4f} drop={drops[i]:.4f}"
+            f"conf={conf:.4f}"
         )
 
 
@@ -238,7 +233,7 @@ def main():
     # Output dir
     with open(args.config, "r") as f:
         exp_name = json.load(f)["exp_name"]
-    out_dir = Path("results") / exp_name / "posthoc_superpixels_3imgtest"
+    out_dir = Path("results") / exp_name / "posthoc_superpixels_600imgtest"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect attributions batch by batch
