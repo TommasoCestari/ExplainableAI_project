@@ -1,0 +1,18 @@
+{
+  "method": "LIME",
+  "config": "configs/fashion_mnist_lambda1e-2_c5_seed29.json",
+  "exp_name": "fashion_mnist_lambda1e-2_c5_seed29",
+  "n_lime_samples": 2000,
+  "n_samples": 200,
+  "total_time_s": 190.114,
+  "time_per_sample_s": 0.95057,
+  "mean_confidence_drop": 0.064025,
+  "std_confidence_drop": 0.197912,
+  "device": "cpu",
+  "use_superpixels": true,
+  "sp_num_segments": 20,
+  "sp_compactness": 10.0,
+  "sp_drop_top_mean": 0.615769,
+  "sp_drop_rand_mean": 0.17677,
+  "sp_drop_relative_mean": 0.438999
+}
