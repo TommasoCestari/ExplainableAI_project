@@ -16,18 +16,25 @@ def normalize(x_pix, mean=MEAN, std=STD):
     return (x_pix - mean) / std
 
 
+def ensure_batch(x, device):
+    if x.dim() == 3:
+        x = x.unsqueeze(0)
+    elif x.dim() != 4:
+        raise ValueError("Input must be [1,28,28] or [1,1,28,28]")
+    return x.to(device)
+
+
 def add_white_noise(x_norm, sigma=0.05, mean=MEAN, std=STD):
-    # 1) normalized -> pixel space
+    # normalized -> pixel space
     x_pix = denormalize(x_norm, mean, std)
 
-    # 2) add Gaussian white noise in pixel space
-    noise = torch.randn_like(x_pix) * sigma
+    # add Gaussian white noise in pixel space
+    noise = torch.randn_like(x_pix) * sigma # same shape as x_pix with noise[i, j] ~ N(0, 1)
     x_noisy_pix = x_pix + noise
 
-    # 3) clip to valid pixel range
+    # clip to valid pixel range
     x_noisy_pix = torch.clamp(x_noisy_pix, 0.0, 1.0) # for visualization
-
-    # 4) pixel -> normalized (for model input)
+    # pixel -> normalized (for model input)
     x_noisy_norm = normalize(x_noisy_pix, mean, std) # for the model
 
     return x_noisy_norm, x_noisy_pix
@@ -35,62 +42,56 @@ def add_white_noise(x_norm, sigma=0.05, mean=MEAN, std=STD):
 
 def plot_stability_comparison(
     model,
-    x_i_norm,            # expected shape [1, 28, 28] or [1, 1, 28, 28]
-    neighbors_norm,      # expected shape [N, 1, 28, 28]
-    j_star,              # index from your argmax(ratio)
+    x_i_norm,   # [1,28,28] or [1,1,28,28]
+    x_j_norm,   # [1,28,28] or [1,1,28,28]
     mean,
     std,
 ):
     model.eval()
     device = next(model.parameters()).device
 
-    # Prepare x_i as [1, 1, 28, 28]
-    if x_i_norm.dim() == 3:
-        x_i_b = x_i_norm.unsqueeze(0).to(device)
-    elif x_i_norm.dim() == 4:
-        x_i_b = x_i_norm.to(device)
-    else:
-        raise ValueError("x_i_norm must have shape [1,28,28] or [1,1,28,28]")
+    x_i_b = ensure_batch(x_i_norm, device)
+    x_j_b = ensure_batch(x_j_norm, device)
 
-    # Pick worst neighbor and keep shape [1, 1, 28, 28]
-    x_j_b = neighbors_norm[j_star].unsqueeze(0).to(device)
+    # If a batch is passed accidentally, keep first neighbor for the plot
+    if x_j_b.size(0) > 1:
+        x_j_b = x_j_b[:1]
 
-    # Forward pass on both samples together
     inputs = torch.cat([x_i_b, x_j_b], dim=0)  # [2,1,28,28]
     with torch.no_grad():
-        y_logp, (concepts, relevances), _ = model(inputs)
+        y_logp, (_, relevances), _ = model(inputs)
         preds = y_logp.argmax(dim=1)
 
     c_i = preds[0].item()
-    c_j = c_i
+    if preds[1].item() != c_i:
+        print(f"[Warning] Prediction changed: {c_i} → {preds[1].item()}")
 
-    # Relevances -> heatmaps (Identity conceptizer: 784 concepts)
-    rel_i = relevances[0, :, c_i].view(28, 28).cpu()
-    rel_j = relevances[1, :, c_j].view(28, 28).cpu()
+    n_concepts = relevances.shape[1]
+    if n_concepts == 28 * 28:
+        rel_i = relevances[0, :, c_i].view(28, 28).cpu() # Take the relevances for all concepts (that correspond to pixels) for one class
+        rel_j = relevances[1, :, c_i].view(28, 28).cpu()
+    else:
+        raise ValueError(
+            f"Expected 784 concepts for pixel alignment, got {n_concepts}"
+        )
 
-    # Denormalize images for display
-    img_i = (x_i_b[0].cpu() * std + mean).squeeze()
-    img_j = (x_j_b[0].cpu() * std + mean).squeeze()
+    img_i = (x_i_b[0, 0].cpu() * std + mean).clamp(0, 1) # [28, 28]
+    img_j = (x_j_b[0, 0].cpu() * std + mean).clamp(0, 1)
 
-    # Shared color scale for fair visual comparison
-    max_abs = torch.max(torch.abs(torch.cat([rel_i.reshape(-1), rel_j.reshape(-1)]))).item()
+    vals = torch.cat([rel_i.flatten(), rel_j.flatten()])
+    max_abs = torch.quantile(torch.abs(vals), 0.99).item() # without this if rel_i was in the range [-1, 1] and rel_j in [-10, 10] they would look equally strong
+    # 99th quantile so we avoid extreme pixels from dominating making the others invisible
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
 
-    sns.heatmap(
-        rel_i, cmap="RdBu_r", center=0, vmin=-max_abs, vmax=max_abs,
-        ax=axes[0], cbar_kws={"label": "Relevance (theta)"}, alpha=0.6
-    )
-    axes[0].imshow(img_i, cmap="gray", alpha=0.4)
+    axes[0].imshow(img_i, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+    axes[0].imshow(rel_i, cmap="RdBu_r", vmin=-max_abs, vmax=max_abs, alpha=0.6, interpolation="nearest")
     axes[0].set_title(f"x_i | pred={preds[0].item()} | map class={c_i}")
     axes[0].axis("off")
 
-    sns.heatmap(
-        rel_j, cmap="RdBu_r", center=0, vmin=-max_abs, vmax=max_abs,
-        ax=axes[1], cbar_kws={"label": "Relevance (theta)"}, alpha=0.6
-    )
-    axes[1].imshow(img_j, cmap="gray", alpha=0.4)
-    axes[1].set_title(f"x_j* | pred={preds[1].item()} | map class={c_j}")
+    axes[1].imshow(img_j, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+    axes[1].imshow(rel_j, cmap="RdBu_r", vmin=-max_abs, vmax=max_abs, alpha=0.6, interpolation="nearest")
+    axes[1].set_title(f"x_j | pred={preds[1].item()} | map class={c_i}")
     axes[1].axis("off")
 
     plt.tight_layout()
