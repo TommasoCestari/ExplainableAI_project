@@ -51,10 +51,7 @@ The notebooks in the root folder are reporting and analysis notebooks.
 
 - [fashion_mnist_posthoc_1e-2_c5.ipynb](fashion_mnist_posthoc_1e-2_c5.ipynb) is a detailed post-hoc analysis notebook for the `lambda=1e-2, c=5` run. It contains multiple sections with plots and tables for inspecting the explanations and their effect on model confidence.
 - [fashion_mnist_report_1.ipynb](fashion_mnist_report_1.ipynb) is a report notebook that compares experiment outputs and visualizes representative samples, explanations, and summary metrics.
-- [fashion_mnist_report_1e-1.ipynb](fashion_mnist_report_1e-1.ipynb) is the same style of report notebook for the `1e-1` setting.
-- [fashion_mnist_report_1e-2.ipynb](fashion_mnist_report_1e-2.ipynb) is the report notebook for the `1e-2` setting and contains the most complete executed analysis among the report notebooks.
-- [fashion_mnist_report_1e-3.ipynb](fashion_mnist_report_1e-3.ipynb) is the report notebook for the `1e-3` setting.
-- [fashion_mnist_report_1e-4.ipynb](fashion_mnist_report_1e-4.ipynb) is the report notebook for the `1e-4` setting.
+- Other reports have the same code but for different values of lambda
 
 
 ## Setup
