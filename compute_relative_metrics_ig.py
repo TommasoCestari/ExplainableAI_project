@@ -36,30 +36,31 @@ class SENNWrapper(nn.Module):
 
 def compute_top_vs_random_drops(wrapper, images, attributions, pred_labels, top_fraction=0.20):
     """Compute both Top-K% and Random-K% ablation confidence drops."""
-    fill_value = -0.8102  # Valore di background (nero normalizzato per FashionMNIST)
+    # Normalized black pixel value for FashionMNIST.
+    fill_value = -0.8102
     wrapper.eval()
     
     with torch.no_grad():
-        # Confidenza originale
+        # Confidence of the original prediction before ablation.
         probs_orig = torch.softmax(wrapper(images), dim=1)
         conf_orig = probs_orig[torch.arange(len(pred_labels)), pred_labels]
 
         images_top = images.clone()
         images_rand = images.clone()
         
-        k = int(top_fraction * images.shape[2] * images.shape[3]) # 20% di 784 = 156 pixel
+        k = int(top_fraction * images.shape[2] * images.shape[3])
 
         for i in range(len(images)):
-            # 1. Maschera i Top pixel (trovati da Integrated Gradients)
+            # Mask top-attribution pixels.
             attr_flat = attributions[i].sum(dim=0).abs().flatten()
             topk_idx = attr_flat.topk(k).indices
             images_top[i].view(images.shape[1], -1)[:, topk_idx] = fill_value
             
-            # 2. Maschera K pixel Casuali (Random baseline)
+            # Mask a random set of pixels of the same size (baseline).
             rand_idx = torch.randperm(images.shape[2] * images.shape[3])[:k]
             images_rand[i].view(images.shape[1], -1)[:, rand_idx] = fill_value
 
-        # Ricalcola la confidenza
+        # Confidence after top-attribution and random ablation.
         conf_top = torch.softmax(wrapper(images_top), dim=1)[torch.arange(len(pred_labels)), pred_labels]
         conf_rand = torch.softmax(wrapper(images_rand), dim=1)[torch.arange(len(pred_labels)), pred_labels]
 
@@ -78,12 +79,10 @@ def main():
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # 1. Carica le impostazioni e trova la cartella dei risultati
     with open(args.config, "r") as f:
         exp_name = json.load(f)["exp_name"]
     out_dir = Path("results") / exp_name / "posthoc"
     
-    # 2. Carica i risultati salvati da INTEGRATED GRADIENTS
     print("Caricamento risultati Integrated Gradients salvati...")
     ig_attrs = torch.load(out_dir / "ig_attributions.pt", map_location=device)
     ig_preds = torch.load(out_dir / "ig_predictions.pt", map_location=device)
@@ -91,11 +90,9 @@ def main():
     n_samples = len(ig_attrs)
     print(f"Trovate {n_samples} spiegazioni pre-calcolate.")
 
-    # 3. Carica il modello e il DataLoader
     trainer = load_senn(args.config, device=device)
     wrapper = SENNWrapper(trainer.model).to(device)
     
-    # Raccogli le immagini originali corrispondenti
     all_images = []
     collected = 0
     for x, _ in trainer.test_loader:
@@ -106,7 +103,6 @@ def main():
             
     all_images = torch.cat(all_images)[:n_samples].to(device)
 
-    # 4. Calcola i drop a lotti
     batch_size = 128
     all_drop_top, all_drop_rand = [], []
     
@@ -125,7 +121,6 @@ def main():
     all_drop_rand = np.array(all_drop_rand)
     relative_drops = all_drop_top - all_drop_rand
     
-    # 5. Salva i nuovi risultati
     np.save(out_dir / "ig_drop_top.npy", all_drop_top)
     np.save(out_dir / "ig_drop_rand.npy", all_drop_rand)
     np.save(out_dir / "ig_drop_relative.npy", relative_drops)
