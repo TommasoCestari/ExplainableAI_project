@@ -32,7 +32,6 @@ Each experiment folder typically contains:
 - `logs/`: TensorBoard logs and training progress output.
 - `accuracies_losses_train.csv`, `accuracies_losses_valid.csv`, and sometimes `accuracies_losses_test.csv`: per-epoch or per-evaluation metrics.
 - `posthoc/`: LIME and Integrated Gradients attribution tensors, ablation-drop arrays, and metadata files.
-- `posthoc_old/`: older attribution outputs kept for comparison in some runs.
 
 
 ## The `senn` folder
@@ -56,7 +55,7 @@ The notebooks in the root folder are reporting and analysis notebooks.
 
 ## Setup
 
-The project is intended for a conda environment with Python 3.12 and the usual scientific Python stack, plus PyTorch and Captum.
+The project is intended for a conda environment with Python 3.12 
 
 ```bash
 conda env create -f environment.yml
